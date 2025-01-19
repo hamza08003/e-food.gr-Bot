@@ -12,11 +12,11 @@ import os
 
 
 class ProfileCreator:
-    def __init__(self, website_url, password):
+    def __init__(self, website_url):
         self.website_url = website_url
-        self.password = password
         self.driver = None
         # self.fake = Faker('el_GR')
+        # self.password = password
         self.cookies_dir = "profile_cookies"
         self.current_profile_index = 0
         
@@ -73,25 +73,31 @@ class ProfileCreator:
         self.driver = Driver(**chrome_options)
 
 
-    # def load_emails(self, file_path):
-    #     """
-    #     Load emails from CSV/Excel file
-    #     """
-    #     if file_path.endswith('.csv'):
-    #         df = pd.read_csv(file_path)
-    #     else:
-    #         df = pd.read_excel(file_path)
-    #     return df['email'].tolist()
-
-
     def load_profile_data(self, file_path):
         """
-        Load profile data from CSV/Excel file
+        Load profile data from an Excel file.
+        Required columns: Name, Email, Address, Password
         """
-        if file_path.endswith('.csv'):
-            return pd.read_csv(file_path)
-        else:
-            return pd.read_excel(file_path)
+        try:
+            if not (file_path.endswith('.xlsx') or file_path.endswith('.xls')):
+                raise ValueError("Invalid file type. Please provide an Excel file with '.xlsx' or '.xls' extension.")
+            
+            data = pd.read_excel(file_path)
+            required_columns = ['Name', 'Email', 'Address', 'Password']
+            
+            # verify all required columns exist
+            missing_columns = [col for col in required_columns if col not in data.columns]
+            if missing_columns:
+                raise ValueError(f"Missing required columns: {', '.join(missing_columns)}")
+            
+            return data
+
+        except FileNotFoundError:
+            raise FileNotFoundError(f"The file at {file_path} does not exist. Please check the file path.")
+        except ValueError as ve:
+            raise ve
+        except Exception as e:
+            raise Exception(f"An error occurred while reading the Excel file: {str(e)}")
 
 
     def get_next_profile(self, profiles_df):
@@ -165,15 +171,40 @@ class ProfileCreator:
 
     def verify_login_status(self):
         """
-        Verify if the login was successful using cookies
+        Verify if the login was successful by checking for navbar elements
+        that are only present when logged in.
+        
+        Returns:
+            bool: True if logged in, False otherwise
         """
         try:
-            # wait for an element that's only visible when logged in
+            # wait for either the logged-in profile section or the login button
+            # to determine the current state
             WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.XPATH, "//button[contains(text(), 'Order now')]"))
+                lambda driver: len(driver.find_elements(By.CLASS_NAME, "sc-dWrLtm")) > 0  # profile section
+                or len(driver.find_elements(By.XPATH, "//button[contains(text(), 'Login/Sign up')]")) > 0
             )
-            return True
+            
+            # check if the profile section is present (logged in)
+            profile_elements = self.driver.find_elements(By.CLASS_NAME, "sc-dWrLtm")
+            if len(profile_elements) > 0:
+                print("Logged in: Profile section found")
+                return True
+                
+            # check if login button is present (not logged in)
+            login_buttons = self.driver.find_elements(By.XPATH, "//button[contains(text(), 'Login/Sign up')]")
+            if len(login_buttons) > 0:
+                print("Not logged in: Login button found")
+                return False
+                
+            print("Could not definitively determine login status")
+            return False
+            
         except TimeoutException:
+            print("Timeout while checking login status")
+            return False
+        except Exception as e:
+            print(f"Error checking login status: {e}")
             return False
 
 
@@ -293,14 +324,13 @@ class ProfileCreator:
         name_parts = profile['Name'].split()
         first_name = name_parts[0]
         last_name = ' '.join(name_parts[1:])
-
-        print(f"Creating profile with name: {first_name} {last_name}")
+        email = profile['Email']
 
         return all([
             self.wait_and_fill(By.ID, "register_firstName", first_name),
             self.wait_and_fill(By.ID, "register_lastName", last_name),
-             self.wait_and_fill(By.ID, "register_email", profile['Email']),
-            self.wait_and_fill(By.ID, "register_password", self.password),
+             self.wait_and_fill(By.ID, "register_email", email),
+            self.wait_and_fill(By.ID, "register_password", profile['Password']),
             self.wait_and_click(By.XPATH, "//button[@type='submit' and contains(text(), 'Continue')]")
         ])
 
@@ -407,42 +437,172 @@ class ProfileCreator:
                 self.driver.quit()
 
 
-    def run(self, data_file):
+    # def run(self, data_file):
+    #     """
+    #     Main method to run the bot
+    #     """
+    #     try:
+    #         self.setup_driver()
+    #         # emails = self.load_emails(email_file)
+    #         profiles_df = self.load_profile_data(data_file)
+            
+    #         # for email in emails:
+    #         #     success = self.create_profile(email)
+    #         #     if success:
+    #         #         print(f"Successfully created profile for {email}")
+    #         #     time.sleep(random.uniform(3, 6))
+
+    #         for _, email_row in profiles_df.iterrows():
+    #             profile = self.get_next_profile(profiles_df)
+    #             success = self.create_profile(profile)
+
+    #             if success:
+    #                 print(f"Successfully created profile for {profile['Email']}")
+                
+    #             time.sleep(random.uniform(3, 6))
+                
+    #     finally:
+    #         if self.driver:
+    #             self.driver.quit()
+
+
+    def handle_profile_creation(self):
         """
-        Main method to run the bot
+        Handle the profile creation process with browser reset between profiles
         """
         try:
-            self.setup_driver()
-            # emails = self.load_emails(email_file)
-            profiles_df = self.load_profile_data(data_file)
+            # get Excel file path
+            while True:
+                file_path = input("\nEnter the path to your Excel file: ").strip()
+                if os.path.exists(file_path):
+                    break
+                print("File not found. Please try again.")
+
+            # load profile data
+            profiles_df = self.load_profile_data(file_path)
+            print(f"\nFound {len(profiles_df)} profiles in Excel file.")
+
+            # get starting row
+            while True:
+                try:
+                    start_row = int(input(f"Enter starting row (1-{len(profiles_df)}): ").strip())
+                    if 1 <= start_row <= len(profiles_df):
+                        break
+                    print("Invalid row number. Please try again.")
+                except ValueError:
+                    print("Please enter a valid number.")
+
+            # get number of profiles to create
+            while True:
+                try:
+                    num_profiles = int(input(f"How many profiles to create (max {len(profiles_df)-start_row+1}): ").strip())
+                    if 1 <= num_profiles <= len(profiles_df)-start_row+1:
+                        break
+                    print("Invalid number. Please try again.")
+                except ValueError:
+                    print("Please enter a valid number.")
+
+            # confirmation
+            print("\nProfile Creation Summary:")
+            print(f"Starting from row: {start_row}")
+            print(f"Number of profiles to create: {num_profiles}")
+            confirm = input("\nProceed? (y/n): ").strip().lower()
             
-            # for email in emails:
-            #     success = self.create_profile(email)
-            #     if success:
-            #         print(f"Successfully created profile for {email}")
-            #     time.sleep(random.uniform(3, 6))
-
-            for _, email_row in profiles_df.iterrows():
-                profile = self.get_next_profile(profiles_df)
-                success = self.create_profile(profile)
-
-                if success:
-                    print(f"Successfully created profile for {profile['Email']}")
+            if confirm == 'y':
+                end_row = start_row + num_profiles - 1
+                for index in range(start_row-1, end_row):
+                    # Set up new browser instance for each profile
+                    self.setup_driver()
+                    try:
+                        profile = profiles_df.iloc[index]
+                        print(f'\nCreating profile {index+1}/{end_row} using email "{profile["Email"]}" with name "{profile["Name"]}" and address "{profile["Address"]}"')
+                        success = self.create_profile(profile)
+                        
+                        if success:
+                            print(f"Successfully created profile for {profile['Email']}")
+                        else:
+                            print(f"Failed to create profile for {profile['Email']}")
+                        
+                    finally:
+                        # close the current browser instance
+                        if self.driver:
+                            print("Closing browser window...")
+                            self.driver.quit()
+                            self.driver = None
+                        
+                        # random delay between 2 and 3 minutes (120 to 180 seconds) before starting next profile
+                        delay = random.uniform(120, 180)
+                        print(f"Waiting {delay:.1f} seconds before next profile...")
+                        time.sleep(delay)
                 
-                time.sleep(random.uniform(3, 6))
+                print("\nProfile creation process completed!")
                 
-        finally:
+        except Exception as e:
+            print(f"An error occurred: {str(e)}")
             if self.driver:
                 self.driver.quit()
+                self.driver = None
+
+    def view_created_profiles(self):
+        """
+        Display all saved profiles from cookies directory
+        """
+        print("\nSaved Profiles:")
+        print("-" * 50)
+        
+        cookie_files = os.listdir(self.cookies_dir)
+        if not cookie_files:
+            print("No saved profiles found.")
+            return
+            
+        for i, file in enumerate(cookie_files, 1):
+            email = file.replace('.json', '')
+            print(f"{i}. {email}")
+        
+        print("-" * 50)
+
+
+    def display_menu(self):
+        """
+        Display the main menu and handle user input
+        """
+        while True:
+            print("\n" + "="*50)
+            print("E-food Profile Creator - Main Menu")
+            print("="*50)
+            print("1. Create new profiles from Excel")
+            print("2. View created profiles")
+            print("3. Exit")
+            print("="*50)
+            
+            choice = input("Enter your choice (1-3): ").strip()
+            
+            if choice == "1":
+                self.handle_profile_creation()
+            elif choice == "2":
+                self.view_created_profiles()
+            elif choice == "3":
+                print("\nExiting program...")
+                break
+            else:
+                print("\nInvalid choice. Please try again.")
+
 
 
 if __name__ == "__main__":
     website_url = "https://www.e-food.gr/"
-    password = "arCtiC@10340"
     
-    bot = ProfileCreator(website_url, password)
-    # bot.run("emails.csv")
+    print("""
+    
+ _____      ______              _  ______           __ _ _        _____                _              ______  _____ _____ 
+|  ___|     |  ___|            | | | ___ \         / _(_) |      /  __ \              | |             | ___ \|  _  |_   _|
+| |__ ______| |_ ___   ___   __| | | |_/ / __ ___ | |_ _| | ___  | /  \/_ __ ___  __ _| |_ ___  _ __  | |_/ /| | | | | |  
+|  __|______|  _/ _ \ / _ \ / _` | |  __/ '__/ _ \|  _| | |/ _ \ | |   | '__/ _ \/ _` | __/ _ \| '__| | ___ \| | | | | |  
+| |___      | || (_) | (_) | (_| | | |  | | | (_) | | | | |  __/ | \__/\ | |  __/ (_| | || (_) | |    | |_/ /\ \_/ / | |  
+\____/      \_| \___/ \___/ \__,_| \_|  |_|  \___/|_| |_|_|\___|  \____/_|  \___|\__,_|\__\___/|_|    \____/  \___/  \_/  
+                                                                                                                                                                                                                                                                                                                                                               
+    """)
 
-    bot.run("profiles.xlsx")
-    # bot.test_saved_profile("someone@example.com")
+    bot = ProfileCreator(website_url)
+    bot.display_menu()
 
